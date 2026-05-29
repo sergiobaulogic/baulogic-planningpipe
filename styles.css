@@ -669,3 +669,121 @@ body {
   .detail-row { grid-template-columns: 1fr; gap: 4px; }
   .modal-status-row { grid-template-columns: repeat(2, 1fr); }
 }
+/* ADDITIONS to styles.css for v1.1 enrichment features
+   Paste this block at the END of your existing styles.css */
+
+/* Quality badges -------------------------------------------------- */
+.card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -8px 0 18px;
+}
+.quality-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+}
+.quality-good {
+  color: var(--status-scheme);
+  background: rgba(127, 212, 154, 0.06);
+}
+.quality-mixed {
+  color: var(--status-conversation);
+  background: rgba(216, 183, 109, 0.06);
+}
+.quality-poor {
+  color: var(--status-dead);
+  background: rgba(244, 241, 234, 0.03);
+}
+.quality-large {
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.company-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(244, 241, 234, 0.04);
+  color: var(--bone-faded);
+}
+.company-bad {
+  background: rgba(239, 100, 100, 0.08);
+  color: #ef6464;
+}
+.company-spv {
+  background: rgba(216, 183, 109, 0.08);
+  color: var(--status-conversation);
+}
+
+.card-dimmed {
+  opacity: 0.55;
+}
+.card-dimmed:hover {
+  opacity: 1;
+}
+
+/* Hide dead toggle ------------------------------------------------ */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--bone-soft);
+  cursor: pointer;
+  margin-left: 8px;
+}
+.toggle-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 36px;
+  height: 20px;
+  background: var(--ink-3);
+  border: 1px solid var(--ink-line-2);
+  border-radius: 999px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s var(--ease);
+}
+.toggle-row input[type="checkbox"]::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--bone-soft);
+  border-radius: 50%;
+  transition: all 0.2s var(--ease);
+}
+.toggle-row input[type="checkbox"]:checked {
+  background: var(--ember);
+}
+.toggle-row input[type="checkbox"]:checked::before {
+  left: 18px;
+  background: var(--ink);
+}
+
+/* Quality section in modal --------------------------------------- */
+.quality-summary {
+  margin-bottom: 12px;
+}
+.quality-flags {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.quality-flags li {
+  color: var(--bone-soft);
+  font-size: 13px;
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
