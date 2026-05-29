@@ -1,12 +1,15 @@
 /* =================================================================
    BAULOGIC PLANNING PORTAL
-   No frameworks. Plain JS, data-driven. State persists to localStorage.
+   v1.1 - Adds Companies House + dev status enrichment display
    ================================================================= */
 
 const STATE = {
   data: null,
   filtered: [],
-  filters: { search: '', tier: '', area: '', status: '' },
+  filters: {
+    search: '', tier: '', area: '', status: '',
+    hideDead: false,
+  },
   status: loadStatus(),
   notes:  loadNotes(),
 };
@@ -29,12 +32,8 @@ function loadNotes() {
   try { return JSON.parse(localStorage.getItem('baulogic.notes') || '{}'); }
   catch { return {}; }
 }
-function saveStatus() {
-  localStorage.setItem('baulogic.status', JSON.stringify(STATE.status));
-}
-function saveNotes() {
-  localStorage.setItem('baulogic.notes', JSON.stringify(STATE.notes));
-}
+function saveStatus() { localStorage.setItem('baulogic.status', JSON.stringify(STATE.status)); }
+function saveNotes()  { localStorage.setItem('baulogic.notes',  JSON.stringify(STATE.notes));  }
 
 function getStatus(id) { return STATE.status[id] || 'new'; }
 function setStatus(id, status) {
@@ -54,10 +53,7 @@ function fmtMoney(low, high) {
   if (low === high || high == null) return `£${low}m`;
   return `£${low}–${high}m`;
 }
-function fmtUnits(n) {
-  if (n === 1) return '1 unit';
-  return `${n} units`;
-}
+function fmtUnits(n) { return n === 1 ? '1 unit' : `${n} units`; }
 function tierShort(tier) {
   if (!tier) return '';
   if (tier.startsWith('Single')) return 'Single Premium';
@@ -66,13 +62,38 @@ function tierShort(tier) {
 }
 function escapeHtml(s) {
   if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/* Quality helpers ------------------------------------------------- */
+function qualityScore(p) { return p.dataQuality?.score ?? null; }
+function qualityBand(p) {
+  const s = qualityScore(p);
+  if (s == null) return 'unscored';
+  if (s >= 70)   return 'good';
+  if (s >= 40)   return 'mixed';
+  return 'poor';
+}
+function qualityLabel(p) {
+  const s = qualityScore(p);
+  if (s == null) return 'Not checked';
+  if (s >= 70)   return `Strong (${s})`;
+  if (s >= 40)   return `Mixed (${s})`;
+  return `Weak (${s})`;
+}
+function companyStatusLabel(p) {
+  const ch = p.companyHouse;
+  if (!ch || !ch.status) return null;
+  return ch.status.charAt(0).toUpperCase() + ch.status.slice(1);
+}
+function isProblematicCompany(p) {
+  const ch = p.companyHouse;
+  if (!ch) return false;
+  if (!ch.status) return false;
+  return ch.status !== 'active';
+}
+
+/* Data load ------------------------------------------------------- */
 async function loadData() {
   const r = await fetch('data.json');
   STATE.data = await r.json();
@@ -86,7 +107,7 @@ function renderHeader() {
   document.getElementById('totalCount').textContent = m.qualifiedProjects;
   document.getElementById('metaSource').textContent = m.sourceFiles;
   document.getElementById('metaRaw').textContent = m.rawProjects.toLocaleString();
-  document.getElementById('metaDate').textContent = m.generated;
+  document.getElementById('metaDate').textContent = m.enrichmentDate || m.generated;
 }
 
 function populateFilters() {
@@ -98,7 +119,6 @@ function populateFilters() {
     opt.textContent = t;
     tierSel.appendChild(opt);
   });
-
   const areas = [...new Set(STATE.data.projects.map(p => p.primeArea))].sort();
   const areaSel = document.getElementById('filterArea');
   areas.forEach(a => {
@@ -110,12 +130,17 @@ function populateFilters() {
 }
 
 function applyFilters() {
-  const { search, tier, area, status } = STATE.filters;
+  const { search, tier, area, status, hideDead } = STATE.filters;
   const q = search.toLowerCase().trim();
   STATE.filtered = STATE.data.projects.filter(p => {
     if (tier && p.qualifyTier !== tier) return false;
     if (area && p.primeArea !== area) return false;
     if (status && getStatus(p.id) !== status) return false;
+    if (hideDead) {
+      const score = qualityScore(p);
+      if (score != null && score < 40) return false;
+      if (isProblematicCompany(p)) return false;
+    }
     if (q) {
       const hay = [
         p.heading, p.proposal, p.siteAddress, p.authority,
@@ -127,6 +152,13 @@ function applyFilters() {
     }
     return true;
   });
+  // Sort: quality score descending if enriched, otherwise tier+value
+  STATE.filtered.sort((a, b) => {
+    const sa = qualityScore(a);
+    const sb = qualityScore(b);
+    if (sa != null && sb != null) return sb - sa;
+    return (b.buildValueLow || 0) - (a.buildValueLow || 0);
+  });
   renderGrid();
   renderSchemes();
 }
@@ -134,12 +166,31 @@ function applyFilters() {
 function projectCard(p) {
   const status = getStatus(p.id);
   const statusOpt = STATUS_OPTIONS.find(s => s.key === status);
+  const band = qualityBand(p);
+  const ch = p.companyHouse;
+  const dev = p.developmentStatus;
+
+  let badges = '';
+  if (band !== 'unscored') {
+    badges += `<span class="quality-badge quality-${band}">${escapeHtml(qualityLabel(p))}</span>`;
+  }
+  if (ch?.status && ch.status !== 'active') {
+    badges += `<span class="company-badge company-bad">${escapeHtml(ch.status)}</span>`;
+  }
+  if (ch?.isSPV) {
+    badges += `<span class="company-badge company-spv">SPV</span>`;
+  }
+  if (dev?.status === 'likely_complete') {
+    badges += `<span class="company-badge company-bad">Likely complete</span>`;
+  }
+
   return `
-    <article class="card" data-id="${escapeHtml(p.id)}">
+    <article class="card ${band === 'poor' ? 'card-dimmed' : ''}" data-id="${escapeHtml(p.id)}">
       <span class="card-status status-${status}">${statusOpt.label}</span>
       <p class="card-tier">${escapeHtml(tierShort(p.qualifyTier))} · ${escapeHtml(p.primeArea || '')}</p>
       <h3 class="card-headline">${escapeHtml(p.heading || 'Unnamed project')}</h3>
       <p class="card-applicant">${escapeHtml(p.applicant?.name || 'Unknown applicant')}</p>
+      ${badges ? `<div class="card-badges">${badges}</div>` : ''}
       <div class="card-meta">
         <span><span class="card-meta-value">${fmtUnits(p.units)}</span></span>
         <span><span class="card-meta-value">${fmtMoney(p.buildValueLow, p.buildValueHigh)}</span> build cost</span>
@@ -151,16 +202,14 @@ function projectCard(p) {
 
 function renderGrid() {
   const grid = document.getElementById('projectGrid');
-  const count = document.getElementById('resultCount');
-  count.textContent = `${STATE.filtered.length} of ${STATE.data.projects.length}`;
+  document.getElementById('resultCount').textContent = `${STATE.filtered.length} of ${STATE.data.projects.length}`;
   if (STATE.filtered.length === 0) {
     grid.innerHTML = `
       <div class="empty" style="grid-column:1/-1;">
         <p class="empty-icon">◌</p>
         <p class="empty-title">No matches</p>
         <p class="empty-body">Try resetting the filters.</p>
-      </div>
-    `;
+      </div>`;
     return;
   }
   grid.innerHTML = STATE.filtered.map(projectCard).join('');
@@ -170,18 +219,13 @@ function renderGrid() {
 }
 
 function renderSchemes() {
-  const tracked = STATE.data.projects.filter(p => {
-    const s = getStatus(p.id);
-    return s !== 'new';
-  });
-
+  const tracked = STATE.data.projects.filter(p => getStatus(p.id) !== 'new');
   const schemeCount = tracked.filter(p => getStatus(p.id) === 'scheme').length;
   document.getElementById('schemesCount').textContent = schemeCount;
   document.getElementById('schemesProgress').textContent = schemeCount;
 
   const countsEl = document.getElementById('schemesCounts');
-  const counts = {};
-  STATUS_OPTIONS.forEach(o => counts[o.key] = 0);
+  const counts = {}; STATUS_OPTIONS.forEach(o => counts[o.key] = 0);
   tracked.forEach(p => counts[getStatus(p.id)]++);
   const colors = {
     contacted: 'var(--status-contacted)',
@@ -189,29 +233,22 @@ function renderSchemes() {
     scheme: 'var(--status-scheme)',
     dead: 'var(--status-dead)',
   };
-  countsEl.innerHTML = STATUS_OPTIONS
-    .filter(o => o.key !== 'new')
-    .map(o => `
-      <span class="scheme-count-pill">
-        <span class="scheme-count-dot" style="background:${colors[o.key]}"></span>
-        ${counts[o.key]} ${escapeHtml(o.label)}
-      </span>
-    `).join('');
+  countsEl.innerHTML = STATUS_OPTIONS.filter(o => o.key !== 'new').map(o => `
+    <span class="scheme-count-pill">
+      <span class="scheme-count-dot" style="background:${colors[o.key]}"></span>
+      ${counts[o.key]} ${escapeHtml(o.label)}
+    </span>`).join('');
 
   drawProgressRing(schemeCount, SCHEMES_TARGET);
 
   const grid = document.getElementById('schemesGrid');
   const empty = document.getElementById('schemesEmpty');
   if (tracked.length === 0) {
-    grid.innerHTML = '';
-    grid.style.display = 'none';
-    empty.style.display = 'block';
-    return;
+    grid.innerHTML = ''; grid.style.display = 'none'; empty.style.display = 'block'; return;
   }
-  empty.style.display = 'none';
-  grid.style.display = 'grid';
-  const sortOrder = { scheme: 1, conversation: 2, contacted: 3, dead: 4 };
-  tracked.sort((a, b) => sortOrder[getStatus(a.id)] - sortOrder[getStatus(b.id)]);
+  empty.style.display = 'none'; grid.style.display = 'grid';
+  const order = { scheme: 1, conversation: 2, contacted: 3, dead: 4 };
+  tracked.sort((a, b) => order[getStatus(a.id)] - order[getStatus(b.id)]);
   grid.innerHTML = tracked.map(projectCard).join('');
   grid.querySelectorAll('.card').forEach(card => {
     card.addEventListener('click', () => openModal(card.dataset.id));
@@ -221,26 +258,18 @@ function renderSchemes() {
 function drawProgressRing(value, max) {
   const ring = document.getElementById('progressRing');
   const pct = Math.min(value / max, 1);
-  const size = 180;
-  const stroke = 8;
-  const radius = (size - stroke) / 2;
+  const size = 180, stroke = 8, radius = (size - stroke) / 2;
   const circ = 2 * Math.PI * radius;
   const offset = circ * (1 - pct);
   ring.innerHTML = `
     <svg width="${size}" height="${size}" style="transform:rotate(-90deg)">
-      <circle cx="${size/2}" cy="${size/2}" r="${radius}"
-              fill="none" stroke="var(--ink-line)" stroke-width="${stroke}"/>
-      <circle cx="${size/2}" cy="${size/2}" r="${radius}"
-              fill="none" stroke="var(--ember)" stroke-width="${stroke}"
-              stroke-linecap="round"
-              stroke-dasharray="${circ}" stroke-dashoffset="${offset}"
-              style="transition:stroke-dashoffset 0.8s var(--ease)"/>
+      <circle cx="${size/2}" cy="${size/2}" r="${radius}" fill="none" stroke="var(--ink-line)" stroke-width="${stroke}"/>
+      <circle cx="${size/2}" cy="${size/2}" r="${radius}" fill="none" stroke="var(--ember)" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${offset}" style="transition:stroke-dashoffset 0.8s var(--ease)"/>
     </svg>
     <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;">
       <span style="font-family:var(--display); font-size:48px; line-height:1; font-weight:400;">${value}</span>
       <span style="font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:0.18em; color:var(--bone-faded); margin-top:6px;">of ${max}</span>
-    </div>
-  `;
+    </div>`;
 }
 
 function openModal(id) {
@@ -254,29 +283,59 @@ function openModal(id) {
     <div class="detail-row">
       <div class="detail-label">${escapeHtml(label)}</div>
       <div class="detail-value">${value || '<span class="muted">Not in data</span>'}</div>
-    </div>
-  `;
+    </div>`;
+
+  // Build the data quality section if enriched
+  let qualitySection = '';
+  if (p.dataQuality) {
+    const flags = (p.dataQuality.flags || []).map(f => `<li>${escapeHtml(f)}</li>`).join('');
+    qualitySection = `
+      <div class="modal-section">
+        <p class="modal-section-title">Data Quality</p>
+        <div class="quality-summary">
+          <span class="quality-badge quality-${qualityBand(p)} quality-large">${escapeHtml(qualityLabel(p))}</span>
+        </div>
+        ${flags ? `<ul class="quality-flags">${flags}</ul>` : '<p class="muted" style="margin-top:8px;">No issues flagged</p>'}
+        ${p.companyHouse && p.companyHouse.status ? `
+          <div class="detail-row" style="margin-top:16px;">
+            <div class="detail-label">Companies House</div>
+            <div class="detail-value">
+              ${escapeHtml(p.companyHouse.name)}<br>
+              <span class="muted">Status: ${escapeHtml(p.companyHouse.status)}${p.companyHouse.isSPV ? ' · Single-purpose vehicle' : ''}</span>
+              ${p.companyHouse.number ? `<br><a href="https://find-and-update.company-information.service.gov.uk/company/${escapeHtml(p.companyHouse.number)}" target="_blank" rel="noopener">View on Companies House →</a>` : ''}
+            </div>
+          </div>` : ''}
+        ${p.developmentStatus && p.developmentStatus.status !== 'unknown' ? `
+          <div class="detail-row">
+            <div class="detail-label">Dev status</div>
+            <div class="detail-value">
+              ${escapeHtml(p.developmentStatus.status.replace('_', ' '))}
+              <span class="muted">(${escapeHtml(p.developmentStatus.confidence)} confidence)</span>
+            </div>
+          </div>` : ''}
+      </div>`;
+  }
 
   body.innerHTML = `
     <p class="modal-tier">${escapeHtml(p.qualifyTier)} · ${escapeHtml(p.primeArea || '')}</p>
-    <h2 class="modal-title" id="modalTitle">${escapeHtml(p.heading || 'Unnamed project')}</h2>
+    <h2 class="modal-title">${escapeHtml(p.heading || 'Unnamed project')}</h2>
     <p class="modal-applicant">${escapeHtml(p.applicant?.name || 'Unknown applicant')}</p>
 
     <div class="modal-section">
       <p class="modal-section-title">Status</p>
-      <div class="modal-status-row" id="statusRow">
+      <div class="modal-status-row">
         ${STATUS_OPTIONS.map(o => `
-          <button class="status-btn ${o.key === status ? 'is-selected' : ''}"
-                  data-status="${o.key}">${escapeHtml(o.label)}</button>
+          <button class="status-btn ${o.key === status ? 'is-selected' : ''}" data-status="${o.key}">${escapeHtml(o.label)}</button>
         `).join('')}
       </div>
     </div>
 
     <div class="modal-section">
       <p class="modal-section-title">Notes</p>
-      <textarea class="notes-area" id="notesArea"
-                placeholder="Call notes, contact attempts, follow-ups…">${escapeHtml(notes)}</textarea>
+      <textarea class="notes-area" id="notesArea" placeholder="Call notes, contact attempts, follow-ups…">${escapeHtml(notes)}</textarea>
     </div>
+
+    ${qualitySection}
 
     <div class="modal-section">
       <p class="modal-section-title">Project</p>
@@ -318,11 +377,9 @@ function openModal(id) {
 
   body.querySelectorAll('.status-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const newStatus = btn.dataset.status;
-      setStatus(p.id, newStatus);
+      setStatus(p.id, btn.dataset.status);
       body.querySelectorAll('.status-btn').forEach(b => b.classList.toggle('is-selected', b === btn));
-      renderGrid();
-      renderSchemes();
+      renderGrid(); renderSchemes();
     });
   });
 
@@ -333,8 +390,7 @@ function openModal(id) {
     notesTimer = setTimeout(() => setNotes(p.id, e.target.value), 300);
   });
 
-  const modal = document.getElementById('modal');
-  modal.setAttribute('aria-hidden', 'false');
+  document.getElementById('modal').setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
 }
 
@@ -344,12 +400,8 @@ function closeModal() {
 }
 
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(t => {
-    t.classList.toggle('tab-active', t.dataset.tab === name);
-  });
-  document.querySelectorAll('.panel').forEach(p => {
-    p.classList.toggle('panel-active', p.id === `tab-${name}`);
-  });
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('tab-active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('panel-active', p.id === `tab-${name}`));
 }
 
 function wire() {
@@ -357,38 +409,35 @@ function wire() {
     if (t.disabled) return;
     t.addEventListener('click', () => switchTab(t.dataset.tab));
   });
-
   document.getElementById('search').addEventListener('input', e => {
-    STATE.filters.search = e.target.value;
-    applyFilters();
+    STATE.filters.search = e.target.value; applyFilters();
   });
   document.getElementById('filterTier').addEventListener('change', e => {
-    STATE.filters.tier = e.target.value;
-    applyFilters();
+    STATE.filters.tier = e.target.value; applyFilters();
   });
   document.getElementById('filterArea').addEventListener('change', e => {
-    STATE.filters.area = e.target.value;
-    applyFilters();
+    STATE.filters.area = e.target.value; applyFilters();
   });
   document.getElementById('filterStatus').addEventListener('change', e => {
-    STATE.filters.status = e.target.value;
-    applyFilters();
+    STATE.filters.status = e.target.value; applyFilters();
   });
+  const hideDeadToggle = document.getElementById('hideDeadToggle');
+  if (hideDeadToggle) {
+    hideDeadToggle.addEventListener('change', e => {
+      STATE.filters.hideDead = e.target.checked; applyFilters();
+    });
+  }
   document.getElementById('clearFilters').addEventListener('click', () => {
-    STATE.filters = { search: '', tier: '', area: '', status: '' };
+    STATE.filters = { search: '', tier: '', area: '', status: '', hideDead: false };
     document.getElementById('search').value = '';
     document.getElementById('filterTier').value = '';
     document.getElementById('filterArea').value = '';
     document.getElementById('filterStatus').value = '';
+    if (hideDeadToggle) hideDeadToggle.checked = false;
     applyFilters();
   });
-
-  document.querySelectorAll('[data-close]').forEach(el => {
-    el.addEventListener('click', closeModal);
-  });
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeModal();
-  });
+  document.querySelectorAll('[data-close]').forEach(el => el.addEventListener('click', closeModal));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
